@@ -10,14 +10,14 @@ struct MaterialBackground: View {
 }
 struct IndustrialBackground: View {
     var body: some View {
-        ZStack {
+        GeometryReader { geometry in ZStack {
             Color(red: 0.96, green: 0.89, blue: 0.73)
             Image("WorkshopBright").resizable().scaledToFill()
             LinearGradient(colors: [.white.opacity(0.12), .clear, Color.orange.opacity(0.08)], startPoint: .top, endPoint: .bottom)
-        }.ignoresSafeArea()
+        }.frame(width: geometry.size.width, height: geometry.size.height).clipped() }.ignoresSafeArea()
     }
 }
 struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
-    var body: some View { content.padding(18).background(RustTheme.panel, in: RoundedRectangle(cornerRadius: 26, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 26).stroke(.white.opacity(0.8))).shadow(color: RustTheme.ink.opacity(0.08), radius: 20, y: 10) }
+    var body: some View { content.padding(18).foregroundStyle(RustTheme.ink).background(LinearGradient(colors: [Color.white, RustTheme.sand], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22, style: .continuous)).brassBorder(radius: 22, width: 2).shadow(color: RustTheme.ink.opacity(0.2), radius: 10, y: 6) }
 }

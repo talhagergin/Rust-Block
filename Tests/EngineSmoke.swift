@@ -27,6 +27,8 @@ enum EngineSmoke {
         expect(rustEngine.stats.rustCreated == 1, "rust statistic should increment")
         expect(rustEngine.usePowerUp(.rewind, at: .init(row: 7, column: 7)) == [.init(row: 7, column: 7)], "rewind should target an active block")
         expect(rustEngine.state(at: .init(row: 7, column: 7)) == .active(life: 8, colorIndex: 2), "rewind should restore life to eight")
+        expect(rustEngine.usePowerUp(.rewind, at: .init(row: 7, column: 7)).isEmpty, "full-life tile must not consume oil")
+        expect(rustEngine.usePowerUp(.blast, at: .init(row: -1, column: 8)).isEmpty, "out-of-bounds power target must be safe")
         expect(rustEngine.usePowerUp(.rustSolvent, at: .init(row: 0, column: 0)) == [.init(row: 0, column: 0)], "solvent should remove rust")
         expect(rustEngine.state(at: .init(row: 0, column: 0)) == .empty, "solvent target should become empty")
 
@@ -41,6 +43,28 @@ enum EngineSmoke {
         expect(DragPlacementMapper.origin(for: CGPoint(x: 311, y: 443), in: frame) == .init(row: 7, column: 7), "drag should map to final cell")
         expect(DragPlacementMapper.origin(for: CGPoint(x: 10, y: 100), in: frame) == nil, "drag outside board should reject")
 
-        print("EngineSmoke: placement, clear, decay, rust, power-ups, and drag mapping passed")
+        let snapshot = SavedRun(version: 1, engine: rustEngine, hand: PieceGenerator.hand(for: rustEngine.cells))
+        let restored = try! JSONDecoder().decode(SavedRun.self, from: JSONEncoder().encode(snapshot))
+        expect(restored.isValid && restored.engine.cells == rustEngine.cells && restored.hand == snapshot.hand, "saved run roundtrip must preserve board and piece IDs")
+        expect(!SavedRun(version: 99, engine: engine, hand: []).isValid, "unknown/corrupt save must be rejected")
+        var stress = GameEngine()
+        for turn in 0..<1000 {
+            let available = stress.cells.filter { stress.canPlace(single, at: $0.point) }
+            if available.isEmpty {
+                _ = stress.usePowerUp(.blast, at: .init(row: turn % 8, column: (turn / 8) % 8))
+            } else {
+                let point = available[(turn * 17) % available.count].point
+                expect(stress.place(single, at: point), "stress placement")
+            }
+            expect(stress.cells.count == 64 && stress.score >= 0, "stress invariants")
+            expect(stress.cells.allSatisfy { cell in
+                switch cell.state {
+                case .empty: return true
+                case let .active(life, color): return (1...8).contains(life) && (0...3).contains(color)
+                case let .rusted(armor): return (1...4).contains(armor)
+                }
+            }, "stress life/armor ranges")
+        }
+        print("EngineSmoke: placement, clear, decay, rust, power-ups, bounds, drag mapping, save validation, roundtrip and 1000-turn stress passed")
     }
 }

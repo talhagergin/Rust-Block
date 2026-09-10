@@ -20,6 +20,8 @@ final class GameAudio {
     private var players: [GameSound: [AVAudioPlayer]] = [:]
     private var nextPlayer: [GameSound: Int] = [:]
     private var musicPlayer: AVAudioPlayer?
+    private var musicRequested = false
+    private var duckID = UUID()
 
     private init() {
         #if os(iOS) || os(tvOS) || os(visionOS)
@@ -43,19 +45,30 @@ final class GameAudio {
     }
 
     func play(_ sound: GameSound) {
+        guard GameStorage.defaults.object(forKey: "rust8.sound") as? Bool != false else { return }
         guard let pool = players[sound], !pool.isEmpty else { return }
         let index = nextPlayer[sound, default: 0] % pool.count
         nextPlayer[sound] = index + 1
         let player = pool[index]
         player.currentTime = 0
         player.play()
+        if [.clear, .rust, .blast, .gameOver].contains(sound), musicPlayer?.isPlaying == true {
+            let token = UUID(); duckID = token
+            musicPlayer?.setVolume(0.07, fadeDuration: 0.04)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, self.duckID == token, self.musicRequested else { return }
+                self.musicPlayer?.setVolume(0.25, fadeDuration: 0.35)
+            }
+        }
     }
 
     func setMusicActive(_ active: Bool) {
+        musicRequested = active
         guard let musicPlayer else { return }
-        if active {
+        if active && GameStorage.defaults.object(forKey: "rust8.music") as? Bool != false {
             guard !musicPlayer.isPlaying else { return }
             if musicPlayer.currentTime >= musicPlayer.duration - 0.1 { musicPlayer.currentTime = 0 }
+            musicPlayer.volume = 0.25
             musicPlayer.play()
         } else if musicPlayer.isPlaying { musicPlayer.pause() }
     }

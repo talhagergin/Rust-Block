@@ -24,9 +24,9 @@ struct Cell: Identifiable, Equatable, Codable {
     let point: GridPoint; var state: CellState = .empty
     var id: String { "\(point.row)-\(point.column)" }
 }
-struct Piece: Identifiable, Equatable { let id = UUID(); let points: [GridPoint]; let colorIndex: Int }
+struct Piece: Identifiable, Equatable, Codable { var id = UUID(); let points: [GridPoint]; let colorIndex: Int }
 enum GamePhase: Equatable { case menu, playing, paused, gameOver }
-struct RunStats { var linesCleared = 0; var rustCreated = 0; var rustBroken = 0 }
+struct RunStats: Codable { var linesCleared = 0; var rustCreated = 0; var rustBroken = 0 }
 
 enum PowerUp: String, CaseIterable, Identifiable, Codable {
     case rustSolvent, blast, rewind
@@ -62,7 +62,7 @@ enum PieceGenerator {
     }
 }
 
-struct GameEngine {
+struct GameEngine: Codable {
     private(set) var cells: [Cell] = (0..<64).map { Cell(point: .init(row: $0 / 8, column: $0 % 8)) }
     private(set) var score = 0; private(set) var moves = 0; private(set) var combo = 0
     private(set) var stats = RunStats(); private(set) var message = "PARÇAYI SÜRÜKLE"
@@ -81,6 +81,7 @@ struct GameEngine {
     }
 
     mutating func usePowerUp(_ powerUp: PowerUp, at point: GridPoint) -> [GridPoint] {
+        guard (0..<8).contains(point.row), (0..<8).contains(point.column) else { return [] }
         switch powerUp {
         case .rustSolvent:
             guard case .rusted = state(at: point) else { return [] }
@@ -102,7 +103,7 @@ struct GameEngine {
             score += affected.count * 24
             return affected
         case .rewind:
-            guard case let .active(_, colorIndex) = state(at: point) else { return [] }
+            guard case let .active(life, colorIndex) = state(at: point), life < GameBalance.startingLife else { return [] }
             set(.active(life: GameBalance.startingLife, colorIndex: colorIndex), at: point)
             return [point]
         }

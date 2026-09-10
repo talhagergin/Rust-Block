@@ -78,6 +78,26 @@ def stereo(left: list[float], right: list[float] | None = None) -> tuple[list[fl
 def write(name: str, channels: tuple[list[float], list[float]]) -> None:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     left, right = channels
+    if name.startswith("sfx_"):
+        # Shared small-room signature: restrained stereo reflections, softer
+        # brittle highs, click-free attack and tail. Keep impacts transient-led.
+        mastered = []
+        for channel_index, channel in enumerate((left, right)):
+            opposite = right if channel_index == 0 else left
+            result = [0.0] * len(channel)
+            low = 0.0
+            for i, sample in enumerate(channel):
+                low += 0.45 * (sample - low)
+                value = sample * 0.65 + low * 0.35
+                for delay, gain in [(0.037, 0.10), (0.079, 0.065), (0.127, 0.035)]:
+                    offset = int(delay * RATE)
+                    if i >= offset:
+                        value += opposite[i - offset] * gain
+                attack = min(1.0, i / (0.002 * RATE))
+                tail = min(1.0, (len(channel) - 1 - i) / (0.035 * RATE))
+                result[i] = value * attack * tail * 0.88
+            mastered.append(result)
+        left, right = mastered
     with wave.open(str(OUTPUT / f"{name}.wav"), "wb") as target:
         target.setnchannels(2)
         target.setsampwidth(2)
@@ -185,27 +205,44 @@ def blast() -> tuple[list[float], list[float]]:
 
 
 def music() -> tuple[list[float], list[float]]:
-    duration = 16.0
+    # Eight bars at 96 BPM. Fold every note/reverb tail around the loop boundary;
+    # unlike a fade-out/fade-in, this preserves the groove at every repetition.
+    beat = 60 / 96
+    duration = 32 * beat
     left, right = tone(duration), tone(duration)
-    beat = 60 / 104
-    bass = [55.0, 65.41, 73.42, 49.0]
-    melody = [392.0, 523.25, 587.33, 659.25, 783.99, 659.25, 587.33, 523.25]
-    total_beats = int(duration / beat) + 1
-    for index in range(total_beats):
-        start_time = index * beat
-        root = bass[(index // 4) % len(bass)]
-        add_mode(left, start_time, root, 0.13, 0.38); add_mode(right, start_time, root * 2, 0.055, 0.28, 0.18)
-        add_impact(left, start_time, 0.08 if index % 4 else 0.16, 0.08, 3000 + index, 0.34)
-        add_impact(right, start_time + beat / 2, 0.055, 0.045, 3300 + index, 0.82)
-        note = melody[index % len(melody)]
-        add_mode(left, start_time + beat * 0.5, note, 0.065, 0.2)
-        add_mode(right, start_time + beat * 0.5 + 0.012, note * 1.5, 0.045, 0.18, 0.25)
-    add_rattle(left, 0.0, duration - 0.1, 0.012, 4100)
-    for channel in (left, right):
-        fade = int(0.16 * RATE)
-        for index in range(fade):
-            channel[index] *= index / fade
-            channel[-index - 1] *= index / fade
+    chords = [(57, 60, 64, 67), (53, 57, 60, 64), (48, 55, 59, 62), (55, 59, 62, 65)]
+    def note(start: float, midi: int, level: float, decay: float, pan: float, pad: bool = False) -> None:
+        frequency = 440 * 2 ** ((midi - 69) / 12)
+        length = int(decay * 9 * RATE)
+        begin = int(start * RATE)
+        for sample in range(length):
+            t = sample / RATE
+            attack = 1 - math.exp(-t / (0.12 if pad else 0.004))
+            signal = math.sin(math.tau * frequency * t) + (0.08 if pad else 0.22) * math.sin(math.tau * frequency * 2 * t)
+            value = signal * level * attack * math.exp(-t / decay)
+            position = (begin + sample) % len(left)
+            left[position] += value * (1 - pan * 0.4)
+            right[position] += value * (1 + pan * 0.4)
+            # Quiet ping-pong reflections, also circular.
+            right[(position + int(beat * 0.75 * RATE)) % len(right)] += value * 0.16
+            left[(position + int(beat * 1.5 * RATE)) % len(left)] += value * 0.09
+    for bar in range(8):
+        chord = chords[bar % 4]
+        start = bar * 4 * beat
+        for index, midi in enumerate(chord):
+            note(start, midi + 12, 0.024, 0.95, (index - 1.5) / 2, pad=True)
+        for pulse in range(4):
+            when = start + pulse * beat
+            note(when, chord[0] - 12, 0.14 if pulse % 2 == 0 else 0.08, 0.22, 0)
+            if pulse != 3 or bar % 2 == 0:
+                note(when + beat * 0.5, chord[(pulse + bar) % 4] + 24, 0.075, 0.18, (-1) ** pulse * 0.6)
+            # Soft clockwork percussion, with tiny attack ramps to avoid clicks.
+            tick = tone(0.13)
+            add_impact(tick, 0, 0.055, 0.09, 6000 + bar * 4 + pulse, 0.7)
+            for i, value in enumerate(tick):
+                value *= min(1, i / 100)
+                position = (int((when + beat * 0.5) * RATE) + i) % len(left)
+                left[position] += value * 0.7; right[position] += value
     return stereo(left, right)
 
 

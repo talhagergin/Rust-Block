@@ -2,25 +2,37 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var model = GameViewModel()
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             IndustrialBackground()
             switch model.phase {
             case .menu: MainMenuView(model: model).transition(.opacity.combined(with: .scale(scale: 1.04)))
-            case .playing, .paused: GameView(model: model).transition(.opacity)
+            case .playing, .paused: GameView(model: model).frame(maxWidth: 560).transition(.opacity)
             case .gameOver: GameOverView(model: model).transition(.opacity.combined(with: .scale(scale: 0.94)))
             }
-            if model.isShopOpen { StoreOverlay(model: model).transition(.opacity.combined(with: .scale(scale: 0.94))).zIndex(20) }
+            if model.phase == .paused { PauseOverlay(model: model).zIndex(10) }
+            if model.needsRescue && model.phase == .playing { RescueOverlay(model: model).zIndex(11) }
+            if model.isShopOpen { StoreOverlay(model: model).transition(.opacity).zIndex(20) }
         }
-        .animation(.easeInOut(duration: 0.28), value: model.phase)
-        .animation(.spring(response: 0.38, dampingFraction: 0.78), value: model.isShopOpen)
+        .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: model.phase)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.isShopOpen)
         .preferredColorScheme(.light)
         .onChange(of: model.phase) { _, phase in GameAudio.shared.setMusicActive(phase == .playing) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.save(); if model.phase == .playing { model.phase = .paused }; GameAudio.shared.setMusicActive(false) }
+        }
+        .onChange(of: model.isShopOpen) { _, open in GameAudio.shared.setMusicActive(!open && model.phase == .playing) }
         .onAppear {
+            #if DEBUG
             let arguments = ProcessInfo.processInfo.arguments
             if arguments.contains("--ui-test-reset") { model.resetEconomyForUITest() }
-            if arguments.contains("--store-preview") { model.isShopOpen = true }
+            if arguments.contains("--rescue-test") { model.prepareRescueTest() }
+            else if arguments.contains("--line-test") { model.prepareLineTest() }
+            else if arguments.contains("--store-preview") { model.isShopOpen = true }
             else if arguments.contains("--pause-preview") { model.start(); model.phase = .paused }
             else if arguments.contains("--game-over-preview") { model.phase = .gameOver }
             else if arguments.contains("--rust-preview") {
@@ -33,25 +45,32 @@ struct ContentView: View {
                 model.start()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { model.burstID = UUID() }
             } else if arguments.contains("--game-preview") { model.start() }
+            #endif
         }
     }
 }
 
 struct MainMenuView: View {
     @ObservedObject var model: GameViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var entered = false
     @State private var spin = false
+    @State private var showSettings = false
     var body: some View {
         GeometryReader { proxy in
             ZStack {
                 Color(red: 0.05, green: 0.16, blue: 0.16).opacity(0.17).ignoresSafeArea()
                 AmbientSparkField(color: .orange, count: 34)
-                VStack(spacing: 14) {
-                    Spacer().frame(height: max(36, proxy.safeAreaInsets.top + 14))
+                ScrollView { VStack(spacing: 14) {
+                    HStack {
+                        Label("ATÖLYE • 01", systemImage: "sparkle").font(.caption.weight(.black)).tracking(2)
+                        Spacer()
+                        Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3").font(.title3).frame(width: 44, height: 44).background(.white.opacity(0.85), in: Circle()).brassBorder(radius: 22).contentShape(Circle()) }.buttonStyle(.plain).accessibilityLabel("Ayarlar ve oyun rehberi").accessibilityIdentifier("settings_button")
+                    }.foregroundStyle(RustTheme.teal).padding(.horizontal, 24)
                     ZStack {
-                        Image(systemName: "gearshape.fill").font(.system(size: 126)).foregroundStyle(.orange.opacity(0.74)).rotationEffect(.degrees(spin ? 360 : 0)).offset(x: -74, y: 12)
-                        Image(systemName: "gearshape.2.fill").font(.system(size: 102)).foregroundStyle(RustTheme.teal.opacity(0.9)).rotationEffect(.degrees(spin ? -360 : 0)).offset(x: 79, y: -20)
-                        Image("RustIcon").resizable().scaledToFit().frame(width: 154, height: 154).clipShape(RoundedRectangle(cornerRadius: 34)).brassBorder(radius: 34, width: 4).shadow(color: .orange.opacity(0.65), radius: 24)
+                        Circle().stroke(.white.opacity(0.45), lineWidth: 1).frame(width: 176, height: 176)
+                        Circle().trim(from: 0, to: 0.72).stroke(.orange.opacity(0.55), style: StrokeStyle(lineWidth: 2, dash: [2, 8])).frame(width: 190, height: 190).rotationEffect(.degrees(spin ? 360 : 0)).animation(.linear(duration: 12).repeatForever(autoreverses: false), value: spin)
+                        Image("RustIcon").resizable().scaledToFit().frame(width: 154, height: 154).shadow(color: RustTheme.teal.opacity(0.3), radius: 15, y: 9)
                     }
                     .scaleEffect(entered ? 1 : 0.62).opacity(entered ? 1 : 0)
 
@@ -66,7 +85,7 @@ struct MainMenuView: View {
                     .brassBorder(radius: 15, width: 3)
                     .offset(y: entered ? 0 : 24).opacity(entered ? 1 : 0)
 
-                    Text("8 HAMLE. TEK ŞANS. PASA KARŞI SAVAŞ.")
+                    Text("YERLEŞTİR. PARÇALA. PASI YEN.")
                         .font(.caption.weight(.black)).tracking(1.25).foregroundStyle(RustTheme.ink)
                         .padding(.horizontal, 15).padding(.vertical, 7)
                         .background(.white.opacity(0.78), in: Capsule())
@@ -83,18 +102,19 @@ struct MainMenuView: View {
                                 MenuFeature(icon: "sparkles", text: "TEMİZLE")
                                 MenuFeature(icon: "hammer.fill", text: "PASI KIR")
                             }
-                            Button("ATÖLYEYİ ÇALIŞTIR") { model.start() }.buttonStyle(PrimaryButton())
+                            Button(model.hasSavedRun ? "KALDIĞIN YERDEN DEVAM" : "ATÖLYEYİ ÇALIŞTIR") { model.hasSavedRun ? model.resume() : model.start() }.buttonStyle(PrimaryButton()).accessibilityIdentifier("start_button")
                         }
                     }
                     .padding(.horizontal, 23)
                     .offset(y: entered ? 0 : 42).opacity(entered ? 1 : 0)
                     Spacer().frame(height: max(18, proxy.safeAreaInsets.bottom + 8))
-                }
+                }.frame(maxWidth: 460).frame(maxWidth: .infinity).frame(minHeight: proxy.size.height).padding(.vertical, 12) }.scrollIndicators(.hidden)
             }
         }
+        .sheet(isPresented: $showSettings) { WorkshopSettings() }
         .onAppear {
             withAnimation(.spring(response: 0.65, dampingFraction: 0.72)) { entered = true }
-            withAnimation(.linear(duration: 12).repeatForever(autoreverses: false)) { spin = true }
+            spin = !reduceMotion
         }
     }
 }
@@ -106,7 +126,7 @@ struct MenuFeature: View {
 
 struct WorkshopDashboard: View {
     @ObservedObject var model: GameViewModel
-    var goalProgress: Double { min(1, Double(model.bestScore % 5_000) / 5_000) }
+    var goalProgress: Double { Double(model.bestScore) / Double((model.bestScore / 5_000 + 1) * 5_000) }
     var body: some View {
         VStack(spacing: 9) {
             HStack(spacing: 10) {
@@ -116,7 +136,7 @@ struct WorkshopDashboard: View {
             }
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack { Label("ATÖLYE HEDEFİ", systemImage: "target").font(.caption2.weight(.black)); Spacer(); Text("5.000 PUAN").font(.caption2.weight(.black)).foregroundStyle(.orange) }
+                    HStack { Label("ATÖLYE HEDEFİ", systemImage: "target").font(.caption2.weight(.black)); Spacer(); Text("\((model.bestScore / 5_000 + 1) * 5_000) PUAN").font(.caption2.weight(.black)).foregroundStyle(.brown) }
                     ProgressView(value: goalProgress).tint(.orange)
                     Text("Skor yükseldikçe coin kazan, joker stokla.").font(.system(size: 10, weight: .semibold)).foregroundStyle(.brown)
                 }
@@ -137,6 +157,7 @@ struct WorkshopDashboard: View {
 
 struct GameView: View {
     @ObservedObject var model: GameViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var boardFrame: CGRect = .zero
     @State private var draggedPiece: Piece?
     @State private var dragLocation: CGPoint = .zero
@@ -151,6 +172,7 @@ struct GameView: View {
                     GameHeader(model: model)
                     MetricsBar(model: model)
                     BoardView(model: model, preview: previewPoints, previewIsValid: previewIsValid)
+                        .frame(width: max(200, min(proxy.size.width - 30, proxy.size.height - 340)))
                         .onGeometryChange(for: CGRect.self) { proxy in proxy.frame(in: .named("gameSpace")) } action: { boardFrame = $0 }
                         .padding(.horizontal, 15)
                     RuleStrip()
@@ -158,28 +180,30 @@ struct GameView: View {
                     HStack(spacing: 9) {
                         ForEach(Array(model.hand.enumerated()), id: \.element.id) { index, piece in
                             PieceTray(piece: piece, index: index, isDragging: draggedPiece?.id == piece.id) { value in
+                                guard model.phase == .playing, !model.isShopOpen, !model.needsRescue else { return }
                                 draggedPiece = piece; dragLocation = value.location; hoverOrigin = boardOrigin(for: value.location)
                             } onEnded: { value in finishDrag(piece, at: value.location) }
                         }
                     }.padding(.horizontal, 15)
                     Text("TUT • SÜRÜKLE • BIRAK").font(.caption2.weight(.black)).tracking(1.8).foregroundStyle(RustTheme.teal)
                 }
-                .padding(.top, 40).padding(.bottom, 8)
-                .modifier(ShakeEffect(animatableData: rustShake))
+                .padding(.top, proxy.size.width >= 500 ? max(12, (proxy.size.height - min(proxy.size.width - 30, proxy.size.height - 340) - 360) / 2) : 12).padding(.bottom, 8)
+                .modifier(ShakeEffect(amount: reduceMotion ? 0 : 3, animatableData: rustShake))
 
-                if model.phase == .paused { PauseOverlay(model: model) }
+                #if DEBUG
                 Color.clear.frame(width: 1, height: 1).accessibilityElement().accessibilityLabel("Drag debug").accessibilityValue(lastDropStatus).accessibilityIdentifier("drag_debug")
                 Color.clear.frame(width: 1, height: 1).accessibilityElement().accessibilityLabel("Viewport debug").accessibilityValue("\(Int(boardFrame.minY))").accessibilityIdentifier("viewport_debug")
+                #endif
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             .clipped()
             .coordinateSpace(name: "gameSpace")
             .overlay {
                 ZStack {
-                    if model.burstID != nil { SparkBurst().id(model.burstID) }
+                    if model.burstID != nil { if reduceMotion { Text("ÇİZGİ TEMİZLENDİ!").font(.headline).padding().background(RustTheme.sand, in: Capsule()) } else { SparkBurst().id(model.burstID) } }
                     if let event = model.placementEvent { PlacementBurst().id(event.id).position(cellCenter(for: event.origin)) }
                     if let event = model.powerEvent { PowerUpBurst(event: event).id(event.id).position(cellCenter(for: event.origin)) }
-                    if model.rustEventID != nil { RustFlash().id(model.rustEventID) }
+                    if model.rustEventID != nil && !reduceMotion { RustFlash().id(model.rustEventID) }
                     if model.coinEventID != nil { CoinRewardBurst().id(model.coinEventID) }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height).clipped().allowsHitTesting(false)
@@ -246,7 +270,7 @@ struct GameHeader: View {
             Button { model.openShop() } label: {
                 VStack(spacing: 0) { Image(systemName: "hexagon.fill").font(.caption).foregroundStyle(.yellow); Text("\(model.coins)").font(.caption2.monospacedDigit().weight(.black)).foregroundStyle(.white) }
                     .frame(width: 45, height: 45).background(RustTheme.teal, in: RoundedRectangle(cornerRadius: 11)).brassBorder(radius: 11)
-            }.accessibilityIdentifier("shop_button")
+            }.accessibilityLabel("Joker mağazası").accessibilityValue("\(model.coins)").accessibilityIdentifier("shop_button")
         }.padding(.horizontal, 17)
     }
 }
@@ -284,7 +308,7 @@ struct CellView: View {
     @State private var popScale: CGFloat = 1
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 5).fill(Color(red: 0.76, green: 0.68, blue: 0.57)).overlay(RoundedRectangle(cornerRadius: 5).stroke(.brown.opacity(0.6), lineWidth: 1))
+            EmptySocket()
             switch cell.state {
             case .empty: EmptyView()
             case let .active(life, colorIndex):
@@ -327,7 +351,7 @@ struct PowerUpBar: View {
                     HStack(spacing: 4) {
                         Image(powerUp.assetName).resizable().scaledToFit().frame(width: 34, height: 34)
                         VStack(alignment: .leading, spacing: -1) {
-                            Text(powerUp.shortTitle).font(.system(size: 8, weight: .black)).lineLimit(1)
+                            Text(powerUp.shortTitle).font(.system(size: 10, weight: .black)).lineLimit(1).minimumScaleFactor(0.8)
                             Text("×\(model.inventory(for: powerUp))").font(.caption2.monospacedDigit().weight(.black)).foregroundStyle(model.inventory(for: powerUp) > 0 ? RustTheme.teal : .red)
                         }
                     }
@@ -356,26 +380,27 @@ struct StoreOverlay: View {
             ZStack {
                 Color.black.opacity(0.7).ignoresSafeArea()
                 AmbientSparkField(color: .yellow, count: 28)
-                VStack(spacing: 12) {
+                ScrollView { VStack(spacing: 12) {
                     HStack {
                         VStack(alignment: .leading, spacing: -2) { Text("JOKER").foregroundStyle(.orange); Text("MAĞAZASI").foregroundStyle(.white) }.font(.system(size: 27, weight: .black, design: .rounded))
                         Spacer()
                         HStack(spacing: 5) { Image(systemName: "hexagon.fill").foregroundStyle(.yellow); Text("\(model.coins)").font(.headline.monospacedDigit().weight(.black)).foregroundStyle(.white) }.padding(.horizontal, 12).padding(.vertical, 8).background(RustTheme.teal, in: Capsule()).brassBorder(radius: 20)
-                        Button { model.closeShop() } label: { Image(systemName: "xmark").font(.headline).foregroundStyle(.white).frame(width: 38, height: 38).background(.black.opacity(0.38), in: Circle()) }.accessibilityIdentifier("shop_close")
+                        Button { model.closeShop() } label: { Image(systemName: "xmark").font(.headline).foregroundStyle(.white).frame(width: 44, height: 44).background(.black.opacity(0.38), in: Circle()) }.accessibilityLabel("Mağazayı kapat").accessibilityIdentifier("shop_close")
                     }
                     Text("Puan yaptıkça coin kazan. Jokerleri stokla, pas bastığında atölyeyi kurtar.").font(.caption).foregroundStyle(.white.opacity(0.74)).fixedSize(horizontal: false, vertical: true)
                     ForEach(PowerUp.allCases) { powerUp in StoreItemCard(model: model, powerUp: powerUp) }
                     HStack { Image(systemName: "info.circle.fill"); Text("Her 100 puan = 1 coin").font(.caption.weight(.bold)); Spacer(); Text("ENVANTER KALICIDIR").font(.system(size: 9, weight: .black)) }.foregroundStyle(.white.opacity(0.74)).padding(.top, 3)
                 }
-                .padding(20)
+                .padding(20) }.scrollIndicators(.hidden)
+                .frame(height: min(480, proxy.size.height - 24))
                 .frame(width: min(370, proxy.size.width - 28))
                 .background(Color(red: 0.055, green: 0.16, blue: 0.16).opacity(0.98), in: RoundedRectangle(cornerRadius: 25))
                 .brassBorder(radius: 25, width: 4).shadow(color: .orange.opacity(0.55), radius: 30)
-                .scaleEffect(entered ? 1 : 0.76).opacity(entered ? 1 : 0)
+                .opacity(entered ? 1 : 0)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        .onAppear { withAnimation(.spring(response: 0.48, dampingFraction: 0.72)) { entered = true } }
+        .onAppear { withAnimation(.easeOut(duration: 0.2)) { entered = true } }
     }
 }
 
@@ -395,7 +420,7 @@ struct StoreItemCard: View {
             Button { model.buy(powerUp) } label: {
                 VStack(spacing: 1) { Image(systemName: "hexagon.fill").foregroundStyle(.yellow); Text("\(powerUp.cost)").font(.caption.monospacedDigit().weight(.black)).foregroundStyle(.white) }
                     .frame(width: 52, height: 52).background(affordable ? RustTheme.teal : Color.gray.opacity(0.5), in: RoundedRectangle(cornerRadius: 12)).brassBorder(radius: 12)
-            }.buttonStyle(.plain).accessibilityIdentifier("buy_\(powerUp.rawValue)")
+            }.buttonStyle(.plain).disabled(!affordable).accessibilityLabel("\(powerUp.title), \(powerUp.cost) coin karşılığında al").accessibilityIdentifier("buy_\(powerUp.rawValue)")
         }
         .padding(11).background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 16)).overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.16)))
     }
@@ -415,7 +440,9 @@ struct PieceTray: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, minHeight: 106, maxHeight: 106)
-        .background(trayColor, in: RoundedRectangle(cornerRadius: 15)).brassBorder(radius: 15, width: 3).shadow(color: .brown.opacity(0.3), radius: 5, y: 3).opacity(isDragging ? 0.28 : 1)
+        .background(LinearGradient(colors: [trayColor.opacity(0.85), trayColor, RustTheme.ink.opacity(0.95)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 15))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.2), lineWidth: 1).padding(5).allowsHitTesting(false))
+        .brassBorder(radius: 15, width: 3).shadow(color: .brown.opacity(0.3), radius: 5, y: 3).opacity(isDragging ? 0.28 : 1)
             .contentShape(Rectangle()).highPriorityGesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("gameSpace")).onChanged(onChanged).onEnded(onEnded)).accessibilityElement(children: .ignore).accessibilityLabel("Parça \(index + 1)").accessibilityValue(piece.id.uuidString).accessibilityIdentifier("piece_\(index)")
     }
     private var trayColor: Color { BlockAsset.trayColor(piece.colorIndex) }
@@ -559,6 +586,8 @@ extension View { func brassBorder(radius: CGFloat, width: CGFloat = 2) -> some V
 struct PauseOverlay: View {
     @ObservedObject var model: GameViewModel
     @State private var entered = false
+    @State private var showSettings = false
+    @State private var confirmRestart = false
     var body: some View {
         Color.black.opacity(0.64).ignoresSafeArea().overlay {
             ZStack {
@@ -569,15 +598,18 @@ struct PauseOverlay: View {
                     Text("Dişli hazır. Devam ettiğinde sayaç kaldığı yerden işler.").font(.caption).multilineTextAlignment(.center).foregroundStyle(.white.opacity(0.72))
                     Button("DEVAM ET") { GameAudio.shared.play(.uiTap); model.phase = .playing }.buttonStyle(PrimaryButton())
                     Button { model.openShop() } label: { Label("JOKER MAĞAZASI  •  \(model.coins)", systemImage: "cart.fill").font(.subheadline.weight(.black)).foregroundStyle(.yellow) }
-                    Button("YENİDEN BAŞLAT") { model.start() }.font(.headline).foregroundStyle(.orange)
+                    Button("SES VE OYUN REHBERİ") { showSettings = true }.font(.subheadline.bold()).foregroundStyle(.white).padding(.vertical, 6)
+                    Button("YENİDEN BAŞLAT") { confirmRestart = true }.font(.headline).foregroundStyle(.orange).padding(.vertical, 6)
                     Button("ANA MENÜ") { GameAudio.shared.play(.uiTap); model.phase = .menu }.font(.subheadline.weight(.bold)).foregroundStyle(.white.opacity(0.82))
                 }
                 .padding(24).frame(width: 300)
                 .background(Color(red: 0.07, green: 0.18, blue: 0.18).opacity(0.96), in: RoundedRectangle(cornerRadius: 22))
                 .brassBorder(radius: 22, width: 4).shadow(color: .orange.opacity(0.48), radius: 28)
-                .scaleEffect(entered ? 1 : 0.7).opacity(entered ? 1 : 0)
+                .opacity(entered ? 1 : 0)
             }
         }
+        .sheet(isPresented: $showSettings) { WorkshopSettings() }
+        .confirmationDialog("Mevcut tahta silinip yeni oyun başlatılacak. Coin ve jokerlerin korunur.", isPresented: $confirmRestart, titleVisibility: .visible) { Button("Yeni oyun", role: .destructive) { model.start() } }
         .onAppear { withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) { entered = true } }
     }
 }
@@ -597,19 +629,19 @@ struct GameOverView: View {
                         .offset(x: entered ? CGFloat(cos(Double(index) * 2.4)) * CGFloat(80 + index * 5) : 0, y: entered ? CGFloat(sin(Double(index) * 2.4)) * CGFloat(70 + index * 4) : 0)
                         .opacity(entered ? 0 : 0.85)
                 }
-                VStack(spacing: 15) {
+                ScrollView { VStack(spacing: 15) {
                     Spacer().frame(height: max(44, proxy.safeAreaInsets.top + 16))
                     Image("BlockRustV2").resizable().scaledToFit().frame(width: 104, height: 104).shadow(color: .orange, radius: 22).scaleEffect(entered ? 1 : 0.35)
-                    Text("TAHTA PASLANDI").font(.system(size: 30, weight: .black, design: .rounded)).foregroundStyle(.white).shadow(color: .orange, radius: 8)
+                    Text("ATÖLYE PAYDOSU").font(.system(size: 30, weight: .black, design: .rounded)).foregroundStyle(.white).shadow(color: .orange, radius: 8)
                     Text("SKOR").font(.caption.weight(.black)).tracking(3).foregroundStyle(.orange)
                     Text("\(model.engine.score)").font(.system(size: 64, weight: .black, design: .rounded)).foregroundStyle(.white).monospacedDigit()
                     HStack(spacing: 6) { Image(systemName: "hexagon.fill").foregroundStyle(.yellow); Text("\(model.coins) COIN").font(.subheadline.monospacedDigit().weight(.black)).foregroundStyle(.white) }.padding(.horizontal, 13).padding(.vertical, 7).background(RustTheme.teal, in: Capsule()).brassBorder(radius: 18)
-                    GlassCard { VStack(spacing: 12) { StatRow(label: "Temizlenen çizgi", value: model.engine.stats.linesCleared); StatRow(label: "Oluşan pas", value: model.engine.stats.rustCreated); StatRow(label: "Kırılan pas", value: model.engine.stats.rustBroken); Divider(); StatRow(label: "Atölye rekoru", value: model.bestScore) } }.padding(.horizontal, 25)
+                    GlassCard { VStack(spacing: 12) { StatRow(label: "Bu tur kazanılan coin", value: model.engine.score / 100); StatRow(label: "Temizlenen çizgi", value: model.engine.stats.linesCleared); StatRow(label: "Kırılan pas", value: model.engine.stats.rustBroken); Divider(); StatRow(label: "Atölye rekoru", value: model.bestScore) } }.padding(.horizontal, 25)
                     Button("YENİDEN ATEŞLE") { model.start() }.buttonStyle(PrimaryButton()).padding(.horizontal, 34)
                     Button { model.openShop() } label: { Label("JOKER MAĞAZASI", systemImage: "cart.fill").font(.subheadline.weight(.black)).foregroundStyle(.yellow) }
                     Button("ANA MENÜ") { GameAudio.shared.play(.uiTap); model.phase = .menu }.font(.subheadline.weight(.black)).foregroundStyle(.white)
                     Spacer(minLength: 18)
-                }
+                }.frame(maxWidth: 460).frame(maxWidth: .infinity).frame(minHeight: proxy.size.height) }.scrollIndicators(.hidden)
                 .offset(y: entered ? 0 : 45).opacity(entered ? 1 : 0)
             }
         }
@@ -618,9 +650,17 @@ struct GameOverView: View {
 }
 
 struct StatRow: View { let label: String; let value: Int; var body: some View { HStack { Text(label); Spacer(); Text("\(value)").monospacedDigit().bold() } } }
-struct PrimaryButton: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label.font(.headline).foregroundStyle(.white).frame(maxWidth: .infinity).padding(.vertical, 15).background(RustTheme.teal.opacity(configuration.isPressed ? 0.72 : 1), in: Capsule()).scaleEffect(configuration.isPressed ? 0.97 : 1) } }
+struct PrimaryButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.headline.weight(.black)).foregroundStyle(.white).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.horizontal, 14).padding(.vertical, 16)
+            .background(LinearGradient(colors: [RustTheme.mint, RustTheme.teal, Color(red: 0.02, green: 0.31, blue: 0.33)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 16))
+            .brassBorder(radius: 16, width: 2).shadow(color: RustTheme.teal.opacity(0.3), radius: configuration.isPressed ? 2 : 6, y: configuration.isPressed ? 1 : 4)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
 
 struct AmbientSparkField: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let color: Color; let count: Int
     @State private var active = false
     var body: some View {
@@ -637,7 +677,7 @@ struct AmbientSparkField: View {
                 }
             }
         }
-        .allowsHitTesting(false).onAppear { active = true }
+        .allowsHitTesting(false).accessibilityHidden(true).onAppear { active = !reduceMotion }
     }
 }
 
